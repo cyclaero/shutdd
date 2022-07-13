@@ -1,5 +1,5 @@
 # shutdd
-A shutdown daemon for FreeBSD, lurking for push button events on a GPIO port
+A shutdown daemon for FreeBSD lurking for push button events on a GPIO port
 
 Compile:
 
