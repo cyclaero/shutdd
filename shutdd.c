@@ -3,7 +3,7 @@
 //  Created by Dr. Rolf Jansen on 2022-07-12.
 //  Copyright 2022 Dr. Rolf Jansen. All rights reserved.
 //
-//  clang -g0 -O3 -Wno-empty-body -Wno-parentheses shutdd.c -s -o /usr/local/bin/shutdd
+//  clang -g0 -O3 -fsigned-char -Wno-empty-body -Wno-parentheses shutdd.c -lgpio -s -o /usr/local/bin/shutdd
 //
 //  Redistribution and use in source and binary forms, with or without modification,
 //  are permitted provided that the following conditions are met:
