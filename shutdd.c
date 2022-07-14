@@ -325,19 +325,17 @@ int main(int argc, char *argv[])
    argc -= optind;
    argv += optind;
    daemonize(dKind);
+   atexit(cleanup);
  
-   gpioEventThreadSpec spec = {gpioBank, gpioLine, pushInterval};
-
    if ((gpioHandle = gpio_open(gpioBank)) != GPIO_INVALID_HANDLE)
    {
-      atexit(cleanup);
-
       struct gpio_event_config fifo_config = {GPIO_EVENT_REPORT_DETAIL, 1024};
       ioctl(gpioHandle, GPIOCONFIGEVENTS, &fifo_config);
 
       gpio_config_t gcfg = {gpioLine, {}, 0, GPIO_PIN_INPUT|GPIO_INTR_EDGE_FALLING};
       gpio_pin_set_flags(gpioHandle, &gcfg);
 
+      gpioEventThreadSpec spec = {gpioBank, gpioLine, pushInterval};
       pthread_mutex_lock(&event_mutex);
       if (pthread_create(&event_thread, NULL, gpioEventThread, &spec))
       {
@@ -379,7 +377,6 @@ int main(int argc, char *argv[])
 
    else
    {
-      unlink(pidfname);
       syslog(LOG_ERR, "Cannot open GPIO%d", gpioBank);
       return -1;
    }
