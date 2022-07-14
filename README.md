@@ -3,7 +3,7 @@ A shutdown daemon for FreeBSD lurking for push button events on a GPIO port
 
 Compile:
 
-    clang -g0 -O3 -fsigned-char -Wno-empty-body -Wno-parentheses shutdd.c -lgpio -s -o /usr/local/bin/shutdd
+    clang -g0 -O3 -fsigned-char shutdd.c -lgpio -lpthread -s -o /usr/local/bin/shutdd
 
 Usage:
 
