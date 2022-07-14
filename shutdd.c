@@ -42,7 +42,8 @@
 
 #define DAEMON_NAME "shutdd"
 
-const char *pidfname = "/var/run/shutdd.pid";
+const char   *pidfname   = "/var/run/shutdd.pid";
+gpio_handle_t gpioHandle = -1;
 
 void usage(const char *executable)
 {
@@ -54,7 +55,7 @@ void usage(const char *executable)
           " -n          no console, don't fork off as a daemon.\n"
           " -b bank     GPIO bank id [0-4, default: 0].\n"
           " -g line     GPIO line id [0-53, default: 27].\n"
-          " -i interval double push interval [0-2000 ms, default: 750 ms].\n"
+          " -i interval double push interval [0-2000 ms, default: 600 ms].\n"
           " -h          shows these usage instructions.\n", ++r);
 }
 
@@ -64,7 +65,6 @@ typedef struct
    int           gpioBank;
    int           gpioLine;
    int           pushInterval;
-   gpio_handle_t gpioHandle;
 }
 gpioEventThreadSpec;
 
@@ -93,7 +93,7 @@ void *gpioEventThread(void *thread_param)
    double t0, t, dt;
    for (;;)
    {
-      if ((rc = read(spec->gpioHandle, buffer, sizeof(buffer))) < 0)
+      if ((rc = read(gpioHandle, buffer, sizeof(buffer))) < 0)
          syslog(LOG_ERR, "Cannot read from GPIO%d", spec->gpioBank);
 
       else if (rc%rs != 0)
@@ -133,7 +133,11 @@ void *gpioEventThread(void *thread_param)
 
 void cleanup(void)
 {
-   unlink(pidfname);
+   if (gpioHandle != -1)
+      gpio_close(gpioHandle);
+
+   if (pidfname)
+      unlink(pidfname);
 }
 
 
@@ -182,16 +186,20 @@ typedef enum
 
 void daemonize(DaemonKind kind)
 {
+   struct sigaction act = {signals, SIGCHLD|SIGTSTP|SIGTTOU|SIGTTIN, SA_RESTART};
+
    switch (kind)
    {
       case noDaemon:
-         signal(SIGINT, signals);
+         sigaction(SIGINT, &act, NULL);
          openlog(DAEMON_NAME, LOG_NDELAY | LOG_PID | LOG_CONS, LOG_USER);
+         pidfname = NULL;
          break;
 
       case launchdDaemon:
-         signal(SIGTERM, signals);
+         sigaction(SIGTERM, &act, NULL);
          openlog(DAEMON_NAME, LOG_NDELAY | LOG_PID, LOG_USER);
+         pidfname = NULL;
          break;
 
       case discreteDaemon:
@@ -227,7 +235,10 @@ void daemonize(DaemonKind kind)
          // and mutually exclude other instances from running
          int pidfile = open(pidfname, O_RDWR|O_CREAT, 0640);
          if (pidfile < 0)
+         {
+            pidfname = NULL;
             exit(1);                // can not open our pid file
+         }
 
          if (lockf(pidfile, F_TLOCK, 0) < 0)
             exit(0);                // can not lock our pid file -- was locked already
@@ -237,15 +248,10 @@ void daemonize(DaemonKind kind)
          int  l = snprintf(s, 256, "%d\n", getpid());
          write(pidfile, s, l);      // record pid to our pid file
 
-         signal(SIGHUP,  signals);
-         signal(SIGINT,  signals);
-         signal(SIGQUIT, signals);
-         signal(SIGTERM, signals);
-         signal(SIGCHLD, SIG_IGN);  // ignore child
-         signal(SIGTSTP, SIG_IGN);  // ignore tty signals
-         signal(SIGTTOU, SIG_IGN);
-         signal(SIGTTIN, SIG_IGN);
-
+         sigaction(SIGHUP,  &act, NULL);
+         sigaction(SIGINT,  &act, NULL);
+         sigaction(SIGQUIT, &act, NULL);
+         sigaction(SIGTERM, &act, NULL);
          openlog(DAEMON_NAME, LOG_NDELAY | LOG_PID, LOG_USER);
          break;
       }
@@ -263,7 +269,7 @@ int main(int argc, char *argv[])
 
    int gpioBank     = 0,
        gpioLine     = 27,
-       pushInterval = 750;  // in ms
+       pushInterval = 600;
 
    while ((ch = getopt(argc, argv, "p:fnb:g:i:h")) != -1)
    {
@@ -319,16 +325,18 @@ int main(int argc, char *argv[])
    argc -= optind;
    argv += optind;
    daemonize(dKind);
+ 
+   gpioEventThreadSpec spec = {gpioBank, gpioLine, pushInterval};
 
-   gpioEventThreadSpec spec = {gpioBank, gpioLine, pushInterval, gpio_open(gpioBank)};
-
-   if (spec.gpioHandle != GPIO_INVALID_HANDLE)
+   if ((gpioHandle = gpio_open(gpioBank)) != GPIO_INVALID_HANDLE)
    {
+      atexit(cleanup);
+
       struct gpio_event_config fifo_config = {GPIO_EVENT_REPORT_DETAIL, 1024};
-      ioctl(spec.gpioHandle, GPIOCONFIGEVENTS, &fifo_config);
+      ioctl(gpioHandle, GPIOCONFIGEVENTS, &fifo_config);
 
       gpio_config_t gcfg = {gpioLine, {}, 0, GPIO_PIN_INPUT|GPIO_INTR_EDGE_FALLING};
-      gpio_pin_set_flags(spec.gpioHandle, &gcfg);
+      gpio_pin_set_flags(gpioHandle, &gcfg);
 
       pthread_mutex_lock(&event_mutex);
       if (pthread_create(&event_thread, NULL, gpioEventThread, &spec))
@@ -337,25 +345,42 @@ int main(int argc, char *argv[])
          return -1;
       }
 
+   resume:
       while (gPushFlag == false)
          pthread_cond_wait(&event_cond, &event_mutex);
       gPushFlag = false;
       pthread_mutex_unlock(&event_mutex);
 
-      usleep(pushInterval*1500);
+      usleep(4000*pushInterval);
 
-      if (gPushCount == 1)
-         kill(1, SIGUSR2);
+      switch (gPushCount)
+      {
+         case 1:
+            kill(1, SIGUSR2);
+            break;
 
-      else if (gPushCount > 1)
-         kill(1, SIGINT);
+         case 2:
+            kill(1, SIGINT);
+            break;
 
-      gpio_close(spec.gpioHandle);
+         case 3:
+            kill(1, SIGTERM);
+            break;
+
+         case 4:
+            syslog(LOG_ERR, "Quadruple push is not implemented yet -- shutdd resumes the operation.");
+         default:
+            pthread_mutex_lock(&event_mutex);
+            gPushFlag  = false;
+            gPushCount = 0;
+            goto resume;
+      }
    }
 
    else
    {
-      syslog(LOG_ERR, "Cannot read from GPIO%d", gpioBank);
+      unlink(pidfname);
+      syslog(LOG_ERR, "Cannot open GPIO%d", gpioBank);
       return -1;
    }
 
