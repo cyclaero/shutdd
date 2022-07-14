@@ -7,12 +7,16 @@ Compile:
 
 Usage:
 
-    shutdd [-p file] [-f] [-n] [-b] [-g] [-h]  
-     -p file    the path to the pid file [default: /var/run/shutdd.pid]  
-     -f         foreground mode, don't fork off as a daemon.  
-     -n         no console, don't fork off as a daemon.  
-     -b         GPIO bank id [default: 0].  
-     -g         GPIO line id [default: 27].  
-     -h         shows these usage instructions.  
+    usage: shutdd [-p file] [-f] [-n] [-b bank] [-g line] [-i interval] [-h]
+     -p file     the path to the pid file [default: /var/run/shutdd.pid]
+     -f          foreground mode, don't fork off as a daemon.
+     -n          no console, don't fork off as a daemon.
+     -b bank     GPIO bank id [0-4, default: 0].
+     -g line     GPIO line id [0-53, default: 27].
+     -i interval double push interval [0-2000 ms, default: 500 ms].
+     -h          shows these usage instructions.
 
 `shutdd` does not poll the state of the GPIO port, but instead utilizes FreeBSD's user space interface for GPIO interrupts for lurking on state changes of the GPIO line - default GPIO0.27. Therefore, no significant load is imposed on the CPU's.
+
+A single push causes the system to shutdown.
+A double push causes the system to restart.
