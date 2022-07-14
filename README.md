@@ -19,5 +19,5 @@ Usage:
 `shutdd` does not poll the state of the GPIO port, but instead utilizes FreeBSD's user space interface for GPIO interrupts for lurking on state changes of the GPIO line - default GPIO0.27. Therefore, no significant load is imposed on the CPU's.
 
 A single push causes the system to shutdown.  
-A double push causes the system to restart.
+A double push causes the system to restart.  
 A tripel push causes the system to enter single user mode.
