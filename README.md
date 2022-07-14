@@ -13,7 +13,7 @@ Usage:
      -n          no console, don't fork off as a daemon.
      -b bank     GPIO bank id [0-4, default: 0].
      -g line     GPIO line id [0-53, default: 27].
-     -i interval double push interval [0-2000 ms, default: 500 ms].
+     -i interval double push interval [0-2000 ms, default: 750 ms].
      -h          shows these usage instructions.
 
 `shutdd` does not poll the state of the GPIO port, but instead utilizes FreeBSD's user space interface for GPIO interrupts for lurking on state changes of the GPIO line - default GPIO0.27. Therefore, no significant load is imposed on the CPU's.
