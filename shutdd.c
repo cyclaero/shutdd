@@ -3,7 +3,7 @@
 //  Created by Dr. Rolf Jansen on 2022-07-12.
 //  Copyright 2022 Dr. Rolf Jansen. All rights reserved.
 //
-//  clang -g0 -O3 -fsigned-char -Wno-empty-body -Wno-parentheses shutdd.c -lgpio -s -o /usr/local/bin/shutdd
+//  clang -g0 -O3 -fsigned-char shutdd.c -lgpio -lpthread -s -o /usr/local/bin/shutdd
 //
 //  Redistribution and use in source and binary forms, with or without modification,
 //  are permitted provided that the following conditions are met:
@@ -29,7 +29,9 @@
 
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdbool.h>
 #include <unistd.h>
+#include <pthread.h>
 #include <fcntl.h>
 #include <libgpio.h>
 #include <signal.h>
@@ -46,56 +48,86 @@ void usage(const char *executable)
 {
    const char *r = executable + strlen(executable);
    while (--r >= executable && r && *r != '/');
-   printf("\nusage: %s [-p file] [-f] [-n] [-b] [-g] [-h]\n"
-          " -p file    the path to the pid file [default: /var/run/shutdd.pid]\n"
-          " -f         foreground mode, don't fork off as a daemon.\n"
-          " -n         no console, don't fork off as a daemon.\n"
-          " -b         GPIO bank id [default: 0].\n"
-          " -g         GPIO line id [default: 27].\n"
-          " -h         shows these usage instructions.\n", ++r);
+   printf("\nusage: %s [-p file] [-f] [-n] [-b bank] [-g line] [-i interval] [-h]\n"
+          " -p file     the path to the pid file [default: /var/run/shutdd.pid]\n"
+          " -f          foreground mode, don't fork off as a daemon.\n"
+          " -n          no console, don't fork off as a daemon.\n"
+          " -b bank     GPIO bank id [0-4, default: 0].\n"
+          " -g line     GPIO line id [0-53, default: 27].\n"
+          " -i interval double push interval [0-2000 ms, default: 500 ms].\n"
+          " -h          shows these usage instructions.\n", ++r);
 }
 
 
-int lurkForGPIOStopEvent(int GPIOBankID, int GPIOStopID)
+typedef struct
 {
-   gpio_handle_t gpio;
+   int           gpioBank;
+   int           gpioLine;
+   int           pushInterval;
+   gpio_handle_t gpioHandle;
+}
+gpioEventThreadSpec;
 
-   if ((gpio = gpio_open(GPIOBankID)) != GPIO_INVALID_HANDLE)
+
+static inline double nanostamp(int64_t stamp)
+{
+   uint64_t ns = (1000000000*(stamp & 0xFFFFFFFFu) >> 32);
+   return (int32_t)(stamp >> 32) + ns*1e-9;
+}
+
+
+pthread_t       event_thread;
+pthread_mutex_t event_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t  event_cond  = PTHREAD_COND_INITIALIZER;
+
+bool gPushFlag  = false;
+int  gPushCount = 0;
+
+void *gpioEventThread(void *thread_param)
+{
+   gpioEventThreadSpec *spec = (gpioEventThreadSpec *)thread_param;
+
+   ssize_t rc, rs = sizeof(struct gpio_event_detail);
+   struct  gpio_event_detail buffer[1024];
+
+   double t0, t, dt;
+   for (;;)
    {
-      struct gpio_event_config fifo_config = {GPIO_EVENT_REPORT_DETAIL, 1024};
-      ioctl(gpio, GPIOCONFIGEVENTS, &fifo_config);
-
-      gpio_config_t gcfg = {GPIOStopID, {}, 0, GPIO_PIN_INPUT|GPIO_INTR_EDGE_FALLING};
-      gpio_pin_set_flags(gpio, &gcfg);
-
-      ssize_t rc, rs = sizeof(struct gpio_event_detail);
-      struct  gpio_event_detail buffer[1024];
-
-      if ((rc = read(gpio, buffer, sizeof(buffer))) < 0)
-         syslog(LOG_ERR, "Cannot read from GPIO%d", GPIOBankID);
+      if ((rc = read(spec->gpioHandle, buffer, sizeof(buffer))) < 0)
+         syslog(LOG_ERR, "Cannot read from GPIO%d", spec->gpioBank);
 
       else if (rc%rs != 0)
       {
-         syslog(LOG_ERR, "read() odd count of %zd bytes from GPIO%d", rc, GPIOBankID);
+         syslog(LOG_ERR, "read() odd count of %zd bytes from GPIO%d", rc, spec->gpioBank);
          rc = -1;
       }
 
       else
       {
-         int i, n = (int)(rc/rs);
-         for (rc = 0, i = 0; i < n; i++)
-            rc += (buffer[i].gp_pin == GPIOStopID) ? 1 : 0;
+         int c, i, n = (int)(rc/rs);
+         for (c = 0, i = 0; i < n; i++)
+            c += (buffer[i].gp_pin == spec->gpioLine) ? 1 : 0;
+         
+         if (c)
+         {
+            pthread_mutex_lock(&event_mutex);
+
+            t = nanostamp(buffer[n-1].gp_time);
+            if (gPushCount == 0)
+               gPushCount  = 1, t0 = t, gPushFlag = true;
+
+            else if (0.0005*spec->pushInterval <= (dt = t - t0) && dt < 0.0015*spec->pushInterval)
+               gPushCount += 1, t0 = t, gPushFlag = true;
+
+            if (gPushFlag)
+               pthread_cond_signal(&event_cond);
+
+            pthread_mutex_unlock(&event_mutex);
+        }
       }
-      
-      gpio_close(gpio);
-      return rc;
    }
 
-   else
-   {
-      syslog(LOG_ERR, "Cannot read from GPIO%d", GPIOBankID);
-      return -1;
-   }
+   return NULL;
 }
 
 
@@ -221,16 +253,19 @@ void daemonize(DaemonKind kind)
 }
 
 
+void *gpioEventThread(void *spec);
+
 int main(int argc, char *argv[])
 {
    char        ch;
    const char *cmd   = argv[0];
    DaemonKind  dKind = discreteDaemon;
 
-   int GPIOBankID = 0,
-       GPIOStopID = 27;
+   int gpioBank     = 0,
+       gpioLine     = 27,
+       pushInterval = 500;  // in ms
 
-   while ((ch = getopt(argc, argv, "p:fnb:g:h")) != -1)
+   while ((ch = getopt(argc, argv, "p:fnb:g:i:h")) != -1)
    {
       switch (ch)
       {
@@ -247,7 +282,7 @@ int main(int argc, char *argv[])
             break;
 
          case 'b':
-            if ((GPIOBankID = strtol(optarg, NULL, 10)) < 0 || 4 < GPIOBankID)
+            if ((gpioBank  = strtol(optarg, NULL, 10)) < 0 || 4 < gpioBank)
             {
                usage(cmd);
                return 1;
@@ -255,7 +290,15 @@ int main(int argc, char *argv[])
             break;
 
          case 'g':
-            if ((GPIOStopID = strtol(optarg, NULL, 10)) < 0 || 53 < GPIOStopID)
+            if ((gpioLine = strtol(optarg, NULL, 10)) < 0 || 53 < gpioLine)
+            {
+               usage(cmd);
+               return 1;
+            }
+            break;
+
+         case 'i':
+            if ((pushInterval = strtol(optarg, NULL, 10)) < 0 || 2000 < pushInterval)
             {
                usage(cmd);
                return 1;
@@ -277,8 +320,44 @@ int main(int argc, char *argv[])
    argv += optind;
    daemonize(dKind);
 
-   if (lurkForGPIOStopEvent(GPIOBankID, GPIOStopID) > 0)
-      kill(1, SIGUSR2);
+   gpioEventThreadSpec spec = {gpioBank, gpioLine, pushInterval, gpio_open(gpioBank)};
+
+   if (spec.gpioHandle != GPIO_INVALID_HANDLE)
+   {
+      struct gpio_event_config fifo_config = {GPIO_EVENT_REPORT_DETAIL, 1024};
+      ioctl(spec.gpioHandle, GPIOCONFIGEVENTS, &fifo_config);
+
+      gpio_config_t gcfg = {gpioLine, {}, 0, GPIO_PIN_INPUT|GPIO_INTR_EDGE_FALLING};
+      gpio_pin_set_flags(spec.gpioHandle, &gcfg);
+
+      pthread_mutex_lock(&event_mutex);
+      if (pthread_create(&event_thread, NULL, gpioEventThread, &spec))
+      {
+         syslog(LOG_ERR, "Cannot create thread for reading GPIO interrupts.");
+         return -1;
+      }
+
+      while (gPushFlag == false)
+         pthread_cond_wait(&event_cond, &event_mutex);
+      gPushFlag = false;
+      pthread_mutex_unlock(&event_mutex);
+
+      usleep(pushInterval*1500);
+
+      if (gPushCount == 1)
+         kill(1, SIGUSR2);
+
+      else if (gPushCount > 1)
+         kill(1, SIGINT);
+
+      gpio_close(spec.gpioHandle);
+   }
+
+   else
+   {
+      syslog(LOG_ERR, "Cannot read from GPIO%d", gpioBank);
+      return -1;
+   }
 
    return 0;
-}  
+}
