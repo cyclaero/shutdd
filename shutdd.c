@@ -54,7 +54,7 @@ void usage(const char *executable)
           " -n          no console, don't fork off as a daemon.\n"
           " -b bank     GPIO bank id [0-4, default: 0].\n"
           " -g line     GPIO line id [0-53, default: 27].\n"
-          " -i interval double push interval [0-2000 ms, default: 500 ms].\n"
+          " -i interval double push interval [0-2000 ms, default: 750 ms].\n"
           " -h          shows these usage instructions.\n", ++r);
 }
 
@@ -263,7 +263,7 @@ int main(int argc, char *argv[])
 
    int gpioBank     = 0,
        gpioLine     = 27,
-       pushInterval = 500;  // in ms
+       pushInterval = 750;  // in ms
 
    while ((ch = getopt(argc, argv, "p:fnb:g:i:h")) != -1)
    {
