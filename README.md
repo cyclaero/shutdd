@@ -20,4 +20,4 @@ Usage:
 
 A single push causes the system to shutdown.  
 A double push causes the system to restart.  
-A tripel push causes the system to enter single user mode.
+A triple push causes the system to enter single user mode.
